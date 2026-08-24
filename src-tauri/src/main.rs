@@ -77,52 +77,35 @@ async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Opti
     );
 
     let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
-
     if response.status() != 200 {
         return Ok(None);
     }
 
     let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
 
-    if let Some(lyrics) = json.get("plainLyrics").and_then(|v| v.as_str()) {
-        Ok(Some(lyrics.to_string()))
-    } else {
-        Ok(None)
-    }
+    // Prefer synced lyrics, fall back to plain
+    let lyrics = json
+        .get("syncedLyrics")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("plainLyrics").and_then(|v| v.as_str()));
+
+    Ok(lyrics.map(|s| s.to_string()))
 }
 
-#[tauri::command]
 fn start_polling(app: tauri::AppHandle) {
     thread::spawn(move || {
-        let mut last_title = String::new();
-
         loop {
-            match tauri::async_runtime::block_on(get_current_track()) {
-                Ok(Some(track)) => {
-                    let current_id = format!("{} - {}", track.artist, track.title);
-                    if current_id != last_title {
-                        last_title = current_id.clone();
-                        let _ = app.emit("track-changed", track);
-                    }
-                }
-                Ok(None) => {
-                    if !last_title.is_empty() {
-                        last_title.clear();
-                        let _ = app.emit("no-track", ());
-                    }
-                }
-                Err(_) => {
-                    // Ignore transient SMTC errors
-                }
+            if let Ok(state) = tauri::async_runtime::block_on(get_playback_state()) {
+                let _ = app.emit("playback-update", state);
             }
-            thread::sleep(Duration::from_secs(3));
+            thread::sleep(Duration::from_secs(1));
         }
     });
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_current_track, fetch_lyrics, start_polling])
+        .invoke_handler(tauri::generate_handler![fetch_lyrics])
         .setup(|app| {
             start_polling(app.handle().clone());
             Ok(())
