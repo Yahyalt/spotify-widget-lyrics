@@ -72,13 +72,13 @@ async fn fetch_lyrics(title: String, artist: String) -> Result<Option<String>, S
     );
 
     let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    
+
     if response.status() != 200 {
         return Ok(None);
     }
 
     let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    
+
     if let Some(lyrics) = json.get("plainLyrics").and_then(|v| v.as_str()) {
         Ok(Some(lyrics.to_string()))
     } else {
