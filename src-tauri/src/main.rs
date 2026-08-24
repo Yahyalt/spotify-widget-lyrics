@@ -25,19 +25,24 @@ async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
         }
     }
 
+    // 2. Request the SMTC manager and block until it completes
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
 
-    let session = manager.GetCurrentSession().map_err(|e| e.to_string())?;
-    
-    if session.is_none() {
+    // 3. GetSessions() returns a collection (never null).
+    //    If no media app is active, the collection is simply empty.
+    let sessions = manager.GetSessions().map_err(|e| e.to_string())?;
+    let count = sessions.Size().map_err(|e| e.to_string())?;
+    if count == 0 {
         return Ok(None);
     }
+    let session = sessions.GetAt(0).map_err(|e| e.to_string())?;
 
-    let session = session.unwrap();
-    let props = session.TryGetMediaPropertiesAsync()
+    // 4. Get media properties and block until complete
+    let props = session
+        .TryGetMediaPropertiesAsync()
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
