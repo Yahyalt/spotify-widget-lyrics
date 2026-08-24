@@ -7,14 +7,15 @@ use tauri::Emitter;
 use windows::Media::Control::*;
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct TrackInfo {
+pub struct PlaybackState {
     pub title: String,
     pub artist: String,
+    pub position_ms: u64,
+    pub is_playing: bool,
 }
 
 #[tauri::command]
-async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
-    // 1. Initialize COM for the current background thread
+async fn get_playback_state() -> std::result::Result<Option<PlaybackState>, String> {
     unsafe {
         let hr = windows::Win32::System::Com::CoInitializeEx(
             None,
