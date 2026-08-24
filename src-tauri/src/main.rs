@@ -58,10 +58,10 @@ async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
 }
 
 #[tauri::command]
-async fn fetch_lyrics(title: String, artist: String) -> Result<Option<String>, String> {
+async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Option<String>, String> {
     let client = reqwest::Client::new();
-    
-    // Clean metadata for better matching
+
+    // Clean metadata for better LRCLIB matching
     let clean_title = title.split('(').next().unwrap_or(&title).trim();
     let clean_artist = artist.split(',').next().unwrap_or(&artist).trim();
 
@@ -90,24 +90,25 @@ async fn fetch_lyrics(title: String, artist: String) -> Result<Option<String>, S
 fn start_polling(app: tauri::AppHandle) {
     thread::spawn(move || {
         let mut last_title = String::new();
-        
+
         loop {
-            // Poll SMTC every 3 seconds
-            match get_current_track() {
+            match tauri::async_runtime::block_on(get_current_track()) {
                 Ok(Some(track)) => {
                     let current_id = format!("{} - {}", track.artist, track.title);
                     if current_id != last_title {
                         last_title = current_id.clone();
-                        app.emit("track-changed", track).unwrap();
+                        let _ = app.emit("track-changed", track);
                     }
                 }
                 Ok(None) => {
                     if !last_title.is_empty() {
                         last_title.clear();
-                        app.emit("no-track", ()).unwrap();
+                        let _ = app.emit("no-track", ());
                     }
                 }
-                Err(_) => {} // Ignore SMTC errors
+                Err(_) => {
+                    // Ignore transient SMTC errors
+                }
             }
             thread::sleep(Duration::from_secs(3));
         }
