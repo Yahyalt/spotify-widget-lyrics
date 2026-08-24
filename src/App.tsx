@@ -49,41 +49,88 @@ function App() {
   useEffect(() => { linesRef.current = lines; }, [lines]);
   useEffect(() => { syncedRef.current = isSynced; }, [isSynced]);
 
+  // Listen for playback updates from Rust (every 1s)
   useEffect(() => {
-    // Listen for track changes from Rust backend
-    const unlistenTrack = listen<TrackInfo>('track-changed', (event) => {
-      const newTrack = event.payload;
-      setTrack(newTrack);
-      setStatus('Fetching lyrics...');
-      
-      // Fetch lyrics
-      invoke<string>('fetch_lyrics', { title: newTrack.title, artist: newTrack.artist })
-        .then((lyricsText) => {
-          if (lyricsText) {
-            setLyrics(lyricsText.split('\n').filter(line => line.trim() !== ''));
+    const unlisten = listen<PlaybackState | null>('playback-update', (event) => {
+      const state = event.payload;
+      if (!state) {
+        setTrack(null);
+        setLines([]);
+        setActiveIndex(-1);
+        setIsSynced(false);
+        setStatus('Waiting for Spotify...');
+        trackIdRef.current = '';
+        return;
+      }
+
+      posRef.current = state.position_ms;
+      pollTimeRef.current = Date.now();
+      playingRef.current = state.is_playing;
+
+      const id = `${state.artist}::${state.title}`;
+      if (id !== trackIdRef.current) {
+        trackIdRef.current = id;
+        setTrack({ title: state.title, artist: state.artist });
+        setLines([]);
+        setActiveIndex(-1);
+        setStatus('Fetching lyrics...');
+
+        invoke<string | null>('fetch_lyrics', { title: state.title, artist: state.artist })
+          .then((raw) => {
+            if (trackIdRef.current !== id) return; // track changed mid-fetch
+            if (!raw) {
+              setStatus('Lyrics not found');
+              setIsSynced(false);
+              return;
+            }
+            const parsed = parseLRC(raw);
+            if (parsed.length > 0) {
+              setLines(parsed);
+              setIsSynced(true);
+            } else {
+              // Plain lyrics fallback -> static display
+              setLines(
+                raw.split('\n').filter((t) => t.trim()).map((t) => ({ time: -1, text: t }))
+              );
+              setIsSynced(false);
+            }
             setStatus('');
-          } else {
-            setLyrics([]);
-            setStatus('Lyrics not found');
-          }
-        })
-        .catch((err) => {
-          console.error(err);
-          setStatus('Error fetching lyrics');
-        });
+          })
+          .catch(() => setStatus('Error fetching lyrics'));
+      }
     });
-
-    const unlistenNoTrack = listen('no-track', () => {
-      setTrack(null);
-      setLyrics([]);
-      setStatus('Waiting for Spotify...');
-    });
-
-    return () => {
-      unlistenTrack.then(f => f());
-      unlistenNoTrack.then(f => f());
-    };
+    return () => { unlisten.then((f) => f()); };
   }, []);
+
+  // 60fps interpolation loop: smooth position between 1s polls
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const ls = linesRef.current;
+      if (syncedRef.current && ls.length > 0) {
+        const current = playingRef.current
+          ? posRef.current + (Date.now() - pollTimeRef.current)
+          : posRef.current;
+
+        let idx = -1;
+        for (let i = 0; i < ls.length; i++) {
+          if (ls[i].time <= current) idx = i;
+          else break;
+        }
+        setActiveIndex(idx); // React skips re-render if unchanged
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Auto-scroll active line to center
+  useEffect(() => {
+    if (activeIndex >= 0) {
+      lineElsRef.current[activeIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeIndex]);
 
   return (
     <div className="container" data-tauri-drag-region>
