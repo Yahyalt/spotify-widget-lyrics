@@ -93,12 +93,20 @@ function App() {
           <p>{track.artist}</p>
         </div>
       )}
-      
       {status && <div className="status">{status}</div>}
-      
-      <div className="lyrics-container">
-        {lyrics.map((line, index) => (
-          <p key={index} className="lyric-line">{line}</p>
+      <div className={isSynced ? 'lyrics-container synced' : 'lyrics-container'}>
+        {lines.map((line, i) => (
+          <p
+            key={i}
+            ref={(el) => { lineElsRef.current[i] = el; }}
+            className={
+              'lyric-line' +
+              (i === activeIndex ? ' active' : '') +
+              (i < activeIndex ? ' past' : '')
+            }
+          >
+            {line.text}
+          </p>
         ))}
       </div>
     </div>
