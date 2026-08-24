@@ -5,7 +5,6 @@ use std::thread;
 use std::time::Duration;
 use tauri::Emitter;
 use windows::Media::Control::*;
-use windows::core::*;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TrackInfo {
@@ -13,16 +12,18 @@ pub struct TrackInfo {
     pub artist: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct LyricLine {
-    pub time: f64,
-    pub text: String,
-}
-
 #[tauri::command]
-async fn get_current_track() -> Result<Option<TrackInfo>, String> {
-    // Initialize COM for the current thread
-    unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED).ok().map_err(|e| e.to_string())?; }
+async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
+    // 1. Initialize COM for the current background thread
+    unsafe {
+        let hr = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+        if hr.is_err() {
+            return Err(format!("COM initialization failed: {}", hr));
+        }
+    }
 
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
         .map_err(|e| e.to_string())?
