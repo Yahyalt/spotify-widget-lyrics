@@ -7,14 +7,15 @@ use tauri::Emitter;
 use windows::Media::Control::*;
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct TrackInfo {
+pub struct PlaybackState {
     pub title: String,
     pub artist: String,
+    pub position_ms: u64,
+    pub is_playing: bool,
 }
 
 #[tauri::command]
-async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
-    // 1. Initialize COM for the current background thread
+async fn get_playback_state() -> std::result::Result<Option<PlaybackState>, String> {
     unsafe {
         let hr = windows::Win32::System::Com::CoInitializeEx(
             None,
@@ -25,14 +26,11 @@ async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
         }
     }
 
-    // 2. Request the SMTC manager and block until it completes
     let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
 
-    // 3. GetSessions() returns a collection (never null).
-    //    If no media app is active, the collection is simply empty.
     let sessions = manager.GetSessions().map_err(|e| e.to_string())?;
     let count = sessions.Size().map_err(|e| e.to_string())?;
     if count == 0 {
@@ -40,7 +38,6 @@ async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
     }
     let session = sessions.GetAt(0).map_err(|e| e.to_string())?;
 
-    // 4. Get media properties and block until complete
     let props = session
         .TryGetMediaPropertiesAsync()
         .map_err(|e| e.to_string())?
@@ -49,19 +46,27 @@ async fn get_current_track() -> std::result::Result<Option<TrackInfo>, String> {
 
     let title = props.Title().map_err(|e| e.to_string())?.to_string();
     let artist = props.Artist().map_err(|e| e.to_string())?.to_string();
-
     if title.is_empty() {
         return Ok(None);
     }
 
-    Ok(Some(TrackInfo { title, artist }))
+    // FIX: GetPlaybackInfo() returns an object, then we call PlaybackStatus() on it
+    let playback_info = session.GetPlaybackInfo().map_err(|e| e.to_string())?;
+    let status = playback_info.PlaybackStatus().map_err(|e| e.to_string())?;
+    let is_playing = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
+
+    // Current position in the track
+    let timeline = session.GetTimelineProperties().map_err(|e| e.to_string())?;
+    let timespan = timeline.Position().map_err(|e| e.to_string())?;
+    let position_ms = (timespan.Duration / 10_000).max(0) as u64; // 100ns ticks -> ms
+
+    Ok(Some(PlaybackState { title, artist, position_ms, is_playing }))
 }
 
 #[tauri::command]
 async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Option<String>, String> {
     let client = reqwest::Client::new();
 
-    // Clean metadata for better LRCLIB matching
     let clean_title = title.split('(').next().unwrap_or(&title).trim();
     let clean_artist = artist.split(',').next().unwrap_or(&artist).trim();
 
@@ -72,52 +77,35 @@ async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Opti
     );
 
     let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
-
     if response.status() != 200 {
         return Ok(None);
     }
 
     let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
 
-    if let Some(lyrics) = json.get("plainLyrics").and_then(|v| v.as_str()) {
-        Ok(Some(lyrics.to_string()))
-    } else {
-        Ok(None)
-    }
+    // Prefer synced lyrics, fall back to plain
+    let lyrics = json
+        .get("syncedLyrics")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("plainLyrics").and_then(|v| v.as_str()));
+
+    Ok(lyrics.map(|s| s.to_string()))
 }
 
-#[tauri::command]
 fn start_polling(app: tauri::AppHandle) {
     thread::spawn(move || {
-        let mut last_title = String::new();
-
         loop {
-            match tauri::async_runtime::block_on(get_current_track()) {
-                Ok(Some(track)) => {
-                    let current_id = format!("{} - {}", track.artist, track.title);
-                    if current_id != last_title {
-                        last_title = current_id.clone();
-                        let _ = app.emit("track-changed", track);
-                    }
-                }
-                Ok(None) => {
-                    if !last_title.is_empty() {
-                        last_title.clear();
-                        let _ = app.emit("no-track", ());
-                    }
-                }
-                Err(_) => {
-                    // Ignore transient SMTC errors
-                }
+            if let Ok(state) = tauri::async_runtime::block_on(get_playback_state()) {
+                let _ = app.emit("playback-update", state);
             }
-            thread::sleep(Duration::from_secs(3));
+            thread::sleep(Duration::from_secs(1));
         }
     });
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_current_track, fetch_lyrics, start_polling])
+        .invoke_handler(tauri::generate_handler![fetch_lyrics])
         .setup(|app| {
             start_polling(app.handle().clone());
             Ok(())
