@@ -11,56 +11,15 @@ pub struct PlaybackState {
     pub title: String,
     pub artist: String,
     pub position_ms: u64,
+    pub read_at_ms: u64,
     pub is_playing: bool,
 }
 
-#[tauri::command]
-async fn get_playback_state() -> std::result::Result<Option<PlaybackState>, String> {
-    unsafe {
-        let hr = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_MULTITHREADED,
-        );
-        if hr.is_err() {
-            return Err(format!("COM initialization failed: {}", hr));
-        }
-    }
-
-    let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-
-    let sessions = manager.GetSessions().map_err(|e| e.to_string())?;
-    let count = sessions.Size().map_err(|e| e.to_string())?;
-    if count == 0 {
-        return Ok(None);
-    }
-    let session = sessions.GetAt(0).map_err(|e| e.to_string())?;
-
-    let props = session
-        .TryGetMediaPropertiesAsync()
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-
-    let title = props.Title().map_err(|e| e.to_string())?.to_string();
-    let artist = props.Artist().map_err(|e| e.to_string())?.to_string();
-    if title.is_empty() {
-        return Ok(None);
-    }
-
-    // FIX: GetPlaybackInfo() returns an object, then we call PlaybackStatus() on it
-    let playback_info = session.GetPlaybackInfo().map_err(|e| e.to_string())?;
-    let status = playback_info.PlaybackStatus().map_err(|e| e.to_string())?;
-    let is_playing = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
-
-    // Current position in the track
-    let timeline = session.GetTimelineProperties().map_err(|e| e.to_string())?;
-    let timespan = timeline.Position().map_err(|e| e.to_string())?;
-    let position_ms = (timespan.Duration / 10_000).max(0) as u64; // 100ns ticks -> ms
-
-    Ok(Some(PlaybackState { title, artist, position_ms, is_playing }))
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[tauri::command]
@@ -83,7 +42,6 @@ async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Opti
 
     let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
 
-    // Prefer synced lyrics, fall back to plain
     let lyrics = json
         .get("syncedLyrics")
         .and_then(|v| v.as_str())
@@ -94,11 +52,91 @@ async fn fetch_lyrics(title: String, artist: String) -> std::result::Result<Opti
 
 fn start_polling(app: tauri::AppHandle) {
     thread::spawn(move || {
-        loop {
-            if let Ok(state) = tauri::async_runtime::block_on(get_playback_state()) {
-                let _ = app.emit("playback-update", state);
+        // Init COM ONCE for this thread
+        unsafe {
+            let hr = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            );
+            if hr.is_err() {
+                return;
             }
-            thread::sleep(Duration::from_secs(1));
+        }
+
+        // Request the manager ONCE and keep it alive
+        let manager = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .and_then(|op| op.get())
+        {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        let mut cached_source = String::new();
+        let mut cached_title = String::new();
+        let mut cached_artist = String::new();
+        let mut had_session = false;
+        let mut tick_count: u64 = 0;
+
+        loop {
+            tick_count += 1;
+
+            let state: Option<PlaybackState> = (|| {
+                let sessions = manager.GetSessions().ok()?;
+                if sessions.Size().ok()? == 0 {
+                    return None;
+                }
+                let session = sessions.GetAt(0).ok()?;
+
+                // If the media source app changed, invalidate metadata cache
+                let source = session.SourceAppUserModelId().ok()?.to_string();
+                if source != cached_source {
+                    cached_source = source;
+                    cached_title.clear();
+                    cached_artist.clear();
+                }
+
+                // FAST synchronous position read, every 100ms
+                let timeline = session.GetTimelineProperties().ok()?;
+                let position_ms = (timeline.Position().ok()?.Duration / 10_000).max(0) as u64;
+                let read_at_ms = now_ms();
+
+                let is_playing = session.GetPlaybackInfo().ok()?.PlaybackStatus().ok()?
+                    == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
+
+                // Metadata read: only when source changed, or every 1s fallback (10 ticks * 100ms)
+                if cached_title.is_empty() || tick_count % 10 == 0 {
+                    if let Ok(props) = session
+                        .TryGetMediaPropertiesAsync()
+                        .and_then(|op| op.get())
+                    {
+                        cached_title = props.Title().map(|t| t.to_string()).unwrap_or_default();
+                        cached_artist = props.Artist().map(|a| a.to_string()).unwrap_or_default();
+                    }
+                }
+
+                Some(PlaybackState {
+                    title: cached_title.clone(),
+                    artist: cached_artist.clone(),
+                    position_ms,
+                    read_at_ms,
+                    is_playing,
+                })
+            })();
+
+            match state {
+                Some(s) => {
+                    had_session = true;
+                    let _ = app.emit("playback-update", Some(s));
+                }
+                None => {
+                    if had_session {
+                        had_session = false;
+                        let _ = app.emit("playback-update", None::<PlaybackState>);
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(100)); // 10Hz
         }
     });
 }
