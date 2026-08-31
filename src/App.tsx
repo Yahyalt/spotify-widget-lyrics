@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import './App.css';
 
 interface PlaybackState {
   title: string;
   artist: string;
   position_ms: number;
+  read_at_ms: number;
   is_playing: boolean;
 }
 
 interface LyricLine {
-  time: number; // ms, -1 for plain lyrics
+  time: number;
   text: string;
 }
 
