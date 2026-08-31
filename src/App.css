@@ -11,29 +11,87 @@ body {
   height: 100vh;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
-  padding: 16px 20px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   border-radius: 12px;
 }
 
-.track-info { text-align: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
+.drag-region {
+  padding: 12px 16px;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+}
+
+/* Window Controls */
+.window-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+}
+
+.control-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+
+.control-btn.close:hover {
+  background: rgba(255, 0, 0, 0.3);
+  color: white;
+}
+
+.track-info { text-align: center; margin-top: 20px; }
 .track-info h3 { margin: 0; font-size: 15px; color: #1DB954; }
 .track-info p { margin: 4px 0 0 0; font-size: 12px; opacity: 0.7; }
 
-.status { text-align: center; font-size: 12px; opacity: 0.5; margin-bottom: 8px; }
+.status { text-align: center; font-size: 12px; opacity: 0.5; margin-top: 8px; }
 
-.lyrics-container { flex: 1; overflow-y: auto; text-align: center; padding: 40px 0; }
+.offset-controls { display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 6px; }
+.offset-controls button {
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.offset-controls button:hover { background: rgba(255,255,255,0.25); }
+.offset-controls span { font-size: 11px; opacity: 0.7; min-width: 44px; text-align: center; }
+
+.lyrics-container {
+  flex: 1;
+  overflow-y: auto;
+  text-align: center;
+  padding: 20px 16px;
+}
 
 .lyric-line {
   margin: 10px 0;
   font-size: 14px;
   opacity: 0.9;
-  transition: all 0.25s ease;
+  transition: color 0.2s ease, opacity 0.2s ease;
 }
 
-/* Synced mode styling */
 .lyrics-container.synced .lyric-line { opacity: 0.4; }
 .lyrics-container.synced .lyric-line.past { opacity: 0.2; }
 .lyrics-container.synced .lyric-line.active {
